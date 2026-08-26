@@ -1,0 +1,17 @@
+model: qwen3:8b
+
+servers:
+  - name: hr
+    path: hr_server.py
+    enabled: true
+    description: Employee lookups and department rosters
+
+  - name: ticketing
+    path: ticketing_server.py
+    enabled: true
+    description: Support ticket creation and tracking
+
+  - name: knowledge
+    path: knowledge_server.py
+    enabled: true
+    description: Company policy document search (RAG)

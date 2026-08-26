@@ -1,0 +1,5 @@
+Expense Reimbursement Policy
+Employees may claim reimbursement for travel, client meals, and approved software subscriptions.
+All claims above $50 require a scanned receipt uploaded to the finance portal.
+Reimbursement requests must be filed within 30 days of the expense date.
+Claims are processed within 10 business days after manager approval.

@@ -1,0 +1,6 @@
+employee_id,name,department,role,email
+E001,Asha Rao,Engineering,Backend Developer,asha.rao@company.com
+E002,Vikram Singh,Engineering,DevOps Engineer,vikram.singh@company.com
+E003,Meera Iyer,Sales,Account Executive,meera.iyer@company.com
+E004,Rahul Verma,HR,HR Manager,rahul.verma@company.com
+E005,Divya Nair,Finance,Financial Analyst,divya.nair@company.com
