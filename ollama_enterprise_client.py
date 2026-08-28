@@ -19,7 +19,7 @@ provider abstraction.
 Prerequisites (on YOUR machine, not in a sandbox):
   1. Ollama installed and running: https://ollama.com
   2. Model pulled:  ollama pull qwen3:8b
-  3. pip install ollama mcp==1.9.4 scikit-learn
+  3. pip install ollama mcp==1.9.4 scikit-learn pyyaml
 """
 
 import asyncio
@@ -211,23 +211,51 @@ class EnterpriseMCPClient:
 
     async def connect_all_servers(self, server_configs: list[dict]) -> None:
         for server in server_configs:
-            server_name = server["name"]
-            script_path = BASE_DIR / server["path"]
             try:
-                await self._connect_one_server(server_name, script_path)
+                # Pass the FULL server config dict (not just name/path) so
+                # per-server settings like embed_model / log_path can be
+                # forwarded to the subprocess as environment variables.
+                await self._connect_one_server(server)
             except Exception as exc:
-                logger.error(f"Failed to connect to '{server_name}' server: {exc}")
+                logger.error(f"Failed to connect to '{server['name']}' server: {exc}")
 
         logger.info(
             f"Discovery complete. {len(self.all_tool_schemas)} tools available "
             f"across {len(set(s for _, s in self.tool_routing.values()))} server(s)."
         )
 
-    async def _connect_one_server(self, server_name: str, script_path: Path) -> None:
+    def _build_server_env(self, server: dict) -> dict:
+        """
+        Build the subprocess environment for one server, carrying over any
+        per-server settings declared in servers.yaml. Each server reads its
+        own {SERVER_NAME}_{SETTING} env var -- e.g. knowledge_server.py
+        reads KNOWLEDGE_EMBED_MODEL and KNOWLEDGE_LOG_PATH via
+        os.environ.get(...). This is the piece that actually connects a
+        servers.yaml entry to server-side behavior; without it, per-server
+        config in the YAML is just documentation that nothing reads.
+        """
+        env = os.environ.copy()  # subprocess still needs PATH, etc.
+        prefix = server["name"].upper()
+
+        if "embed_model" in server:
+            env[f"{prefix}_EMBED_MODEL"] = server["embed_model"]
+
+        if "log_path" in server:
+            env[f"{prefix}_LOG_PATH"] = server["log_path"]
+
+        return env
+
+    async def _connect_one_server(self, server: dict) -> None:
+        server_name = server["name"]
+        script_path = BASE_DIR / server["path"]
+
         if not script_path.exists():
             raise FileNotFoundError(f"Server script not found: {script_path}")
 
-        params = StdioServerParameters(command=sys.executable, args=[str(script_path)])
+        env = self._build_server_env(server)
+        params = StdioServerParameters(
+            command=sys.executable, args=[str(script_path)], env=env
+        )
         stdio_transport = await self.exit_stack.enter_async_context(stdio_client(params))
         stdio, write = stdio_transport
         session = await self.exit_stack.enter_async_context(ClientSession(stdio, write))
