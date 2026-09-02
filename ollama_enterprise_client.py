@@ -232,6 +232,11 @@ class EnterpriseMCPClient:
         self.tool_routing: dict[str, tuple[ClientSession, str]] = {}
         self.all_tool_schemas: list[dict] = []  # MCP-native schemas
         self.ollama_tools: list[dict] = []       # Ollama/OpenAI-format schemas
+        # prompt_name -> {session, server_name, arguments, description} --
+        # separate from tool_routing since Prompts are a distinct MCP
+        # primitive (user-selected, not model-invoked) and carry different
+        # metadata (argument names, no input_schema).
+        self.prompt_registry: dict[str, dict] = {}
         self.messages: list[dict] = []           # persistent conversation history
         self.current_question: str = ""          # tracked so call_tool_routed can log it
         _init_audit_db()
@@ -299,6 +304,67 @@ class EnterpriseMCPClient:
             self.all_tool_schemas.append(schema)
             self.ollama_tools.append(_mcp_schema_to_ollama_tool(schema))
             logger.info(f"Discovered tool '{tool.name}' on server '{server_name}'")
+
+        # PROMPTS discovery -- this was previously missing entirely, which
+        # is why a server that only exposes prompts (prompts_server.py)
+        # connected successfully but appeared to do nothing: nothing ever
+        # asked it what it had. list_prompts() is the same kind of
+        # discovery call as list_tools(), just for a different primitive.
+        prompts_response = await session.list_prompts()
+        for prompt in prompts_response.prompts:
+            arg_names = [a.name for a in (prompt.arguments or [])]
+            self.prompt_registry[prompt.name] = {
+                "session": session,
+                "server_name": server_name,
+                "arguments": arg_names,
+                "description": prompt.description or "",
+            }
+            logger.info(f"Discovered prompt '{prompt.name}' on server '{server_name}'")
+
+    def list_available_prompts(self) -> str:
+        """Human-readable listing of every discovered prompt, for the REPL."""
+        if not self.prompt_registry:
+            return "No prompt templates available."
+
+        lines = ["Available prompt templates:"]
+        for name, info in self.prompt_registry.items():
+            args = ", ".join(info["arguments"]) if info["arguments"] else "no arguments"
+            lines.append(f"  /prompt {name} ({args}) -- {info['description']}")
+        return "\n".join(lines)
+
+    async def run_prompt(self, prompt_name: str, arguments: dict) -> str:
+        """
+        Resolve a prompt template into its filled-in text via get_prompt(),
+        then feed that text through the normal ask() pipeline -- so a
+        prompt-triggered request goes through the exact same tool-calling
+        loop, trust-boundary wrapping, and audit logging as any typed
+        question. The prompt is just a better way to PRODUCE the question
+        text; everything downstream of that is identical.
+        """
+        if prompt_name not in self.prompt_registry:
+            available = ", ".join(self.prompt_registry) or "(none)"
+            return f"Unknown prompt '{prompt_name}'. Available: {available}"
+
+        info = self.prompt_registry[prompt_name]
+        expected_args = set(info["arguments"])
+        provided_args = set(arguments)
+        if expected_args != provided_args:
+            return (
+                f"Prompt '{prompt_name}' expects arguments: {sorted(expected_args)}, "
+                f"got: {sorted(provided_args)}"
+            )
+
+        try:
+            result = await info["session"].get_prompt(prompt_name, arguments)
+        except Exception as exc:
+            logger.error(f"Failed to resolve prompt '{prompt_name}': {exc}")
+            return f"Error resolving prompt '{prompt_name}': {exc}"
+
+        prompt_text = "\n".join(
+            msg.content.text for msg in result.messages if hasattr(msg.content, "text")
+        )
+        logger.info(f"Resolved prompt '{prompt_name}' -> sending through ask()")
+        return await self.ask(prompt_text)
 
     async def call_tool_routed(self, tool_name: str, tool_args: dict) -> str:
         if tool_name not in self.tool_routing:
@@ -400,6 +466,9 @@ async def main() -> None:
         print("  - 'Look up employee E002'")
         print("  - 'Create a high priority ticket for a broken VPN, requested by E002'")
         print("  - 'What is our leave policy?'")
+        print()
+        print(client.list_available_prompts())
+        print("Use: /prompt <name> key=value key2=value2   (e.g. /prompt review_expense_claim claim_id=EXP0001)")
         print("Type 'quit' to exit.\n")
 
         while True:
@@ -408,6 +477,27 @@ async def main() -> None:
                 break
             if not user_input:
                 continue
+
+            if user_input == "/prompts":
+                print(f"\n{client.list_available_prompts()}\n")
+                continue
+
+            if user_input.startswith("/prompt "):
+                # Parse: /prompt <name> key=value key2=value2
+                parts = user_input[len("/prompt "):].split()
+                if not parts:
+                    print("\nUsage: /prompt <name> key=value key2=value2\n")
+                    continue
+                prompt_name, arg_tokens = parts[0], parts[1:]
+                try:
+                    arguments = dict(token.split("=", 1) for token in arg_tokens)
+                except ValueError:
+                    print("\nArguments must be in key=value form, e.g. claim_id=EXP0001\n")
+                    continue
+                answer = await client.run_prompt(prompt_name, arguments)
+                print(f"\nAssistant: {answer}\n")
+                continue
+
             answer = await client.ask(user_input)
             print(f"\nAssistant: {answer}\n")
     finally:
