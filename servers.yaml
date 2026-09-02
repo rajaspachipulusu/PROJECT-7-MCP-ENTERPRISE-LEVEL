@@ -21,3 +21,15 @@ servers:
     description: Company policy document search (RAG)
     embed_model: nomic-embed-text
     log_path: logs/knowledge_server.log
+
+  - name: finance
+    path: finance_server.py
+    enabled: true
+    description: Expense claim submission, lookup, and approval
+    log_path: logs/finance_server.log
+
+  - name: prompts
+    path: prompts_server.py
+    enabled: true
+    description: Reusable prompt templates (onboarding, expense review, weekly digest)
+    log_path: logs/prompts_server.log

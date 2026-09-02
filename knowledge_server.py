@@ -42,6 +42,7 @@ from pypdf import PdfReader
 from sklearn.metrics.pairwise import cosine_similarity
 
 from mcp.server.fastmcp import FastMCP
+from prompt_injection_firewall import sanitize_chunk
 
 # embed_model and log_path come from servers.yaml, passed down as env vars
 # by enterprise_client.py when it spawns this server as a subprocess (this
@@ -248,16 +249,24 @@ def search_knowledge_base(question: str, top_k: int = 3) -> list[dict]:
     )
     top = ranked[:top_k]
 
-    return [
-        {
+    results = []
+    for name, text, meta, score in top:
+        clean_text, scan_result = sanitize_chunk(text)
+        if scan_result["flagged"]:
+            logger.warning(
+                f"FIREWALL: flagged content in {meta['source_file']} "
+                f"(page {meta['page']}), patterns={scan_result['matched_patterns']}"
+            )
+        results.append({
             "chunk": name,
             "source_file": meta["source_file"],
             "page": meta["page"],
             "similarity_score": round(float(score), 4),
-            "content": text,
-        }
-        for name, text, meta, score in top
-    ]
+            "content": clean_text,
+            "firewall_flagged": scan_result["flagged"],
+        })
+
+    return results
 
 
 @mcp.tool()
